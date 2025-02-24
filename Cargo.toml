@@ -1,0 +1,10 @@
+[package]
+name = "syscall-monitor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tui = "0.19"
+crossterm = "0.27"
+sysinfo = "0.29"
+nix = "0.26"
