@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tui = "0.19"
-crossterm = "0.27"
-sysinfo = "0.29"
+ratatui = "0.20"
+crossterm = "0.26"
+sysinfo = "0.28"
+fuzzy-matcher = "0.3"
 nix = "0.26"
