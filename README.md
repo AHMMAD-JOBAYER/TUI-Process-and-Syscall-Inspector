@@ -2,6 +2,8 @@
 
 A terminal-based user interface (TUI) application written in Rust for Linux that allows you to inspect running processes and monitor syscalls in real-time.
 
+![Image](https://github.com/user-attachments/assets/5879bcba-a742-407f-b517-6216a813d099)
+
 ## Features
 
 - **Process Selection:**  
