@@ -21,10 +21,7 @@ use ratatui::{
     Terminal,
 };
 
-use sysinfo::{ProcessExt, System, SystemExt, PidExt};
-
-use fuzzy_matcher::skim::SkimMatcherV2;
-use fuzzy_matcher::FuzzyMatcher;
+use sysinfo::{PidExt, ProcessExt, System, SystemExt};
 
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
@@ -56,6 +53,8 @@ struct App {
     target_pid: i32,
     target_process_name: String,
     unique_syscalls: HashSet<String>,
+    detailed_syscalls: HashSet<String>,
+    show_detailed: bool,
     syscall_log: Vec<String>,
     // Filtering mode for syscalls.
     filter_mode: bool,
@@ -64,8 +63,6 @@ struct App {
     // Child process running strace and a channel for its output.
     strace_child: Option<Child>,
     strace_receiver: Option<Receiver<String>>,
-    // Fuzzy matcher.
-    matcher: SkimMatcherV2,
 }
 
 impl App {
@@ -80,14 +77,29 @@ impl App {
             target_pid: 0,
             target_process_name: String::new(),
             unique_syscalls: HashSet::new(),
+            detailed_syscalls: HashSet::new(),
+            show_detailed: false,
             syscall_log: Vec::new(),
             filter_mode: false,
             syscall_filter: String::new(),
             filtered_syscalls: Vec::new(),
             strace_child: None,
             strace_receiver: None,
-            matcher: SkimMatcherV2::default(),
         }
+    }
+
+    fn process_strace_line(&mut self, line: &str) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || !trimmed.chars().next().unwrap_or(' ').is_alphabetic() {
+            return;
+        }
+        if let Some(idx) = trimmed.find('(') {
+            let name = trimmed[..idx].to_string();
+            if self.unique_syscalls.insert(name.clone()) {
+                self.syscall_log.push(name);
+            }
+        }
+        self.detailed_syscalls.insert(trimmed.to_string());
     }
 
     /// Retrieves running processes using sysinfo.
@@ -115,8 +127,12 @@ impl App {
                 .processes
                 .iter()
                 .filter(|p| {
-                    p.name.to_lowercase().contains(&self.process_filter.to_lowercase())
-                        || p.cmd.to_lowercase().contains(&self.process_filter.to_lowercase())
+                    p.name
+                        .to_lowercase()
+                        .contains(&self.process_filter.to_lowercase())
+                        || p.cmd
+                            .to_lowercase()
+                            .contains(&self.process_filter.to_lowercase())
                 })
                 .cloned()
                 .collect();
@@ -130,15 +146,27 @@ impl App {
     fn update_filtered_syscalls(&mut self) {
         let query = self.syscall_filter.clone();
         if query.is_empty() {
-            self.filtered_syscalls = self.unique_syscalls.iter().cloned().collect();
+            self.filtered_syscalls = if self.show_detailed {
+                self.detailed_syscalls.iter().cloned().collect()
+            } else {
+                self.unique_syscalls.iter().cloned().collect()
+            };
         } else {
-            let mut results: Vec<(i64, String)> = self
-                .unique_syscalls
-                .iter()
-                .filter_map(|s| self.matcher.fuzzy_match(s, &query).map(|score| (score, s.clone())))
-                .collect();
-            results.sort_by(|a, b| b.0.cmp(&a.0));
-            self.filtered_syscalls = results.into_iter().map(|(_, s)| s).collect();
+            if self.show_detailed {
+                self.filtered_syscalls = self
+                    .detailed_syscalls
+                    .iter()
+                    .filter(|s| s.to_lowercase().contains(&query))
+                    .cloned()
+                    .collect();
+            } else {
+                self.filtered_syscalls = self
+                    .unique_syscalls
+                    .iter()
+                    .filter(|s| s.to_lowercase().contains(&query))
+                    .cloned()
+                    .collect();
+            }
         }
     }
 
@@ -304,6 +332,9 @@ fn run_app<B: ratatui::backend::Backend>(
                                     app.filter_mode = true;
                                     app.update_filtered_syscalls();
                                 }
+                                KeyCode::Char('t') => {
+                                    app.show_detailed = !app.show_detailed;
+                                }
                                 _ => {}
                             }
                         }
@@ -317,12 +348,9 @@ fn run_app<B: ratatui::backend::Backend>(
             if let AppMode::SyscallMonitoring = app.mode {
                 if !app.filter_mode {
                     if let Some(rx) = &app.strace_receiver {
-                        while let Ok(line) = rx.try_recv() {
-                            if let Some(syscall) = parse_syscall(&line) {
-                                if app.unique_syscalls.insert(syscall.clone()) {
-                                    app.syscall_log.push(syscall);
-                                }
-                            }
+                        let lines: Vec<String> = rx.try_iter().collect();
+                        for line in lines {
+                            app.process_strace_line(&line);
                         }
                     }
                 }
@@ -339,18 +367,6 @@ fn run_app<B: ratatui::backend::Backend>(
             last_tick = Instant::now();
         }
     }
-}
-
-/// Extracts a syscall name from a strace line.
-fn parse_syscall(line: &str) -> Option<String> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if !trimmed.chars().next()?.is_alphabetic() {
-        return None;
-    }
-    trimmed.find('(').map(|idx| trimmed[..idx].to_string())
 }
 
 /// Renders the process selection screen.
@@ -435,30 +451,40 @@ fn draw_syscall_monitoring<B: ratatui::backend::Backend>(f: &mut ratatui::Frame<
     let syscalls: Vec<String> = if app.filter_mode {
         app.filtered_syscalls.clone()
     } else {
-        let mut v: Vec<String> = app.unique_syscalls.iter().cloned().collect();
+        let mut v: Vec<String> = if app.show_detailed {
+            app.detailed_syscalls.iter().cloned().collect()
+        } else {
+            app.unique_syscalls.iter().cloned().collect()
+        };
         v.sort();
         v
     };
 
-    let items: Vec<ListItem> = syscalls.iter().map(|s| ListItem::new(s.as_str())).collect();
-    let syscall_list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("Unique Syscalls"));
+    let items: Vec<ListItem> = syscalls
+        .iter()
+        .rev()
+        .map(|s| ListItem::new(s.as_str()))
+        .collect();
+    let syscall_list =
+        List::new(items).block(Block::default().borders(Borders::ALL).title("Syscalls"));
     f.render_widget(syscall_list, chunks[1]);
 
     if app.filter_mode {
-        let filter_input = Paragraph::new(app.syscall_filter.as_ref())
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Syscall Fuzzy Filter (Enter/Esc to resume)"),
-            );
+        let filter_input = Paragraph::new(app.syscall_filter.as_ref()).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Syscall Fuzzy Filter (Enter/Esc to resume)"),
+        );
         f.render_widget(filter_input, chunks[2]);
-        let instr = Paragraph::new("Type to filter | k: Kill process | q or b: Back")
-            .block(Block::default().borders(Borders::ALL).title("Instructions"));
+        let instr =
+            Paragraph::new("Type to filter | k: Kill process | t: Toggle details | q or b: Back")
+                .block(Block::default().borders(Borders::ALL).title("Instructions"));
         f.render_widget(instr, chunks[3]);
     } else {
-        let instr = Paragraph::new("f: Filter syscalls | k: Kill process | q or b: Back")
-            .block(Block::default().borders(Borders::ALL).title("Instructions"));
+        let instr = Paragraph::new(
+            "f: Filter syscalls | k: Kill process | t: Toggle details | q or b: Back",
+        )
+        .block(Block::default().borders(Borders::ALL).title("Instructions"));
         f.render_widget(instr, chunks[2]);
     }
 }

@@ -14,7 +14,7 @@ A terminal-based user interface (TUI) application written in Rust for Linux that
 - **Syscall Monitoring:**  
   - Attaches to the selected process using `strace` (requires appropriate privileges).
   - Displays only the unique syscalls called by the process.
-  - Allows you to pause live updates and use fuzzy filtering on syscalls.
+  - Allows you to use fuzzy filtering on syscalls.
 
 - **Process Control:**  
   - Kill the monitored process directly from the UI.
@@ -52,7 +52,7 @@ cargo run --release
 Or run the compiled binary directly:
 
 ```sh
-./target/release/TUI-Process-and-Syscall-Inspector
+./target/release/syscall-monitor
 ```
 ## Controls
 
@@ -74,7 +74,7 @@ sudo cargo run --release
 ```
 or
 ```sh
-./target/release/TUI-Process-and-Syscall-Inspector
+sudo ./target/release/syscall-monitor
 ```
 
 ## Contributing
